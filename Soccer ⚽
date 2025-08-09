@@ -1,0 +1,266 @@
+<!DOCTYPE html><html lang="ar">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>لعبة كورة — ركلات جزاء بسيطة</title>
+<style>
+  :root{--bg:#072029;--panel:#0f1724;--accent:#ffd23f;--accent2:#ff6b6b;--muted:#b7c2cf}
+  html,body{height:100%;margin:0;font-family:Tahoma,Arial,Helvetica,sans-serif;background:linear-gradient(#05121a,#072029);color:#eaf6ff}
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .card{width:100%;max-width:900px;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border-radius:12px;padding:14px;display:grid;grid-template-columns:1fr 320px;gap:12px;box-shadow:0 20px 50px rgba(0,0,0,0.6)}
+  canvas{background:linear-gradient(#0a2b1f,#083022);border-radius:8px;width:100%;height:560px;display:block}
+  .panel{background:rgba(255,255,255,0.02);padding:12px;border-radius:10px}
+  label{font-size:13px;color:var(--muted);display:block;margin-bottom:6px}
+  .btn{padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:#dff3ff;cursor:pointer}
+  .btn.primary{background:linear-gradient(90deg,var(--accent),#ffd77a);color:#042;box-shadow:0 8px 18px rgba(255,210,63,0.08);border:none}
+  .score{font-size:18px;color:var(--accent);font-weight:700}
+  .small{font-size:13px;color:var(--muted)}
+  .controls{display:flex;flex-direction:column;gap:8px}
+  .kbd{display:inline-block;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:6px;margin-left:6px}
+  @media(max-width:860px){.card{grid-template-columns:1fr;max-width:560px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div>
+      <canvas id="game" width="800" height="560"></canvas>
+      <div style="display:flex;justify-content:space-between;margin-top:8px;align-items:center">
+        <div>
+          <div class="score">نتيجة: <span id="score">0</span> / <span id="attempts">0</span></div>
+          <div class="small">الهدف: تسجيل أكبر عدد من الركلات من 5 محاولات</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button id="shootBtn" class="btn primary">سدد!</button>
+          <button id="resetBtn" class="btn">إعادة</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>إعدادات التحكم</h3>
+      <div class="controls">
+        <label>زاوية التسديد: <span id="angleVal">0°</span></label>
+        <input id="angle" type="range" min="-40" max="40" value="0">
+        <label>قوة التسديد: <span id="powerVal">60</span>%</label>
+        <input id="power" type="range" min="20" max="100" value="60">
+        <label>صعوبة الحارس</label>
+        <select id="keeper">
+          <option value="easy">سهل</option>
+          <option value="medium" selected>متوسط</option>
+          <option value="hard">صعب</option>
+        </select>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="autoAim" class="btn">تلقائي (نصيحة)</button>
+          <button id="download" class="btn">تحميل الملف</button>
+        </div>
+        <p class="small">اختصارات: <span class="kbd">← →</span> لتغيير الزاوية، <span class="kbd">↑ ↓</span> لتعديل القوة، <span class="kbd">Space</span> للسدد.</p>
+      </div>
+      <div style="margin-top:12px" class="panel">
+        <h4>قواعد بسيطة</h4>
+        <p class="small">تسدد الكرة من نقطة الجزاء. الحارس يحاول التصدي بتحريك نفسه أفقياً أو القفز. كل جولة 5 محاولات، يتم عرض النتيجة في نهاية الجولة.</p>
+      </div>
+    </div>
+  </div>
+</div><script>
+// لعبة ركلات جزاء بسيطة
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const angleInput = document.getElementById('angle');
+const powerInput = document.getElementById('power');
+const angleVal = document.getElementById('angleVal');
+const powerVal = document.getElementById('powerVal');
+const keeperSelect = document.getElementById('keeper');
+const shootBtn = document.getElementById('shootBtn');
+const resetBtn = document.getElementById('resetBtn');
+const scoreEl = document.getElementById('score');
+const attemptsEl = document.getElementById('attempts');
+const autoAimBtn = document.getElementById('autoAim');
+const downloadBtn = document.getElementById('download');
+
+let angle = parseInt(angleInput.value,10); // degrees
+let power = parseInt(powerInput.value,10); // percent
+let keeperLevel = keeperSelect.value;
+let ball = null; // {x,y,vx,vy,r}
+let keeper = null; // {x,y,w,h,vy,phase}
+let playing=false;
+let score=0, attempts=0, maxAttempts=5;
+let anim=null;
+let resultMsg='';
+
+angleVal.textContent = angle + '°';
+powerVal.textContent = power;
+
+function resetGame(){ score=0; attempts=0; updateHUD(); resetRound(); }
+function updateHUD(){ scoreEl.textContent = score; attemptsEl.textContent = attempts + '/' + maxAttempts; }
+
+function resetRound(){ playing=false; ball=null; keeper = {x: canvas.width/2 - 40, y: 160, w:80, h:110, vx:0, phase:0}; draw(); }
+
+function startShot(){ if (playing) return; if (attempts>=maxAttempts) { alert('انتهت الجولة! اضغط إعادة للبدء من جديد.'); return; }
+  // initialize ball at penalty spot
+  const px = canvas.width/2; const py = canvas.height - 120;
+  const rad = 10;
+  // convert angle & power to velocity
+  const speed = power/5; // tuning
+  const radAng = angle * Math.PI/180;
+  const vx = speed * Math.sin(radAng);
+  const vy = -speed * Math.cos(radAng);
+  ball = {x:px,y:py,vx:vx,vy:vy,r:rad, t:0};
+  playing = true;
+  attempts++;
+  updateHUD();
+  playKick();
+  if (!anim) anim = requestAnimationFrame(loop);
+}
+
+function loop(){ update(); draw(); if (playing || attempts<maxAttempts) anim = requestAnimationFrame(loop); else { cancelAnimationFrame(anim); anim=null; } }
+
+function update(){ if (!playing){ // idle keeper movement
+    simulateKeeperIdle(); return; }
+  // move ball
+  ball.t += 0.016; // time step
+  // simple physics with gravity
+  const g = 9.8 * 0.6; // tune
+  ball.vy += g * 0.016;
+  ball.x += ball.vx * 6; // scale for feel
+  ball.y += ball.vy * 6;
+  // keeper AI movement
+  moveKeeperAI();
+
+  // check collision with keeper
+  if (ball.y - ball.r <= keeper.y + keeper.h){
+    // check overlapping in x
+    if (ball.x + ball.r >= keeper.x && ball.x - ball.r <= keeper.x + keeper.w){
+      // caught
+      playing=false; resultMsg='تصدى الحارس!'; playSave(); setTimeout(()=>{ afterShot(false); }, 600);
+      return;
+    }
+  }
+  // check if ball went into goal (y < goal line)
+  if (ball.y < keeper.y + 10){
+    // Determine if within goal posts
+    const leftPost = canvas.width/2 - 140; const rightPost = canvas.width/2 + 140;
+    if (ball.x > leftPost && ball.x < rightPost){ playing=false; resultMsg='هدف!'; score++; playGoal(); setTimeout(()=>{ afterShot(true); }, 800); return; }
+    else { playing=false; resultMsg='خارج المرمى'; playMiss(); setTimeout(()=>{ afterShot(false); }, 700); return; }
+  }
+  // check ground hit beyond keeper (miss)
+  if (ball.y > canvas.height + 50){ playing=false; resultMsg='خارج المرمى'; playMiss(); setTimeout(()=>{ afterShot(false); }, 700); return; }
+}
+
+function afterShot(scored){ // short delay then reset or finish
+  if (attempts>=maxAttempts){ // end of game
+    setTimeout(()=>{ alert('نهاية الجولة! نتيجتك: ' + score + ' من ' + maxAttempts); }, 200);
+  }
+  setTimeout(()=>{ resetRound(); }, 900);
+}
+
+function simulateKeeperIdle(){ // slight breathing motion
+  keeper.phase += 0.02; keeper.x += Math.sin(keeper.phase)*0.4;
+}
+
+function moveKeeperAI(){ // based on difficulty, predict ball x
+  const difficulty = keeperSelect.value; let react = 0.12; let speed = 4; let jumpProb = 0.12;
+  if (difficulty==='easy'){ react=0.08; speed=2.4; jumpProb=0.06; }
+  if (difficulty==='medium'){ react=0.14; speed=3.6; jumpProb=0.12; }
+  if (difficulty==='hard'){ react=0.22; speed=5.2; jumpProb=0.25; }
+  // predict horizontal spot when ball reaches keeper.y
+  const t = ( (keeper.y + keeper.h) - ball.y ) / (ball.vy || 0.0001);
+  let predictedX = ball.x + (ball.vx * 6) * t;
+  // add randomness
+  predictedX += (Math.random()-0.5) * (200 - (power) );
+  // move keeper towards predicted center
+  const targetX = Math.max(80, Math.min(canvas.width-160, predictedX - keeper.w/2));
+  if (keeper.x < targetX - 2) keeper.x += Math.min(speed, targetX - keeper.x);
+  if (keeper.x > targetX + 2) keeper.x -= Math.min(speed, keeper.x - targetX);
+  // random jump attempt
+  if (Math.random() < jumpProb * react) {
+    // extend arms by adjusting height for short period
+    // here we simulate catch by widening collision box briefly
+    keeper.h = 130;
+    setTimeout(()=>{ keeper.h = 110; }, 400);
+  }
+}
+
+function draw(){ // clear
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // draw field top/down gradient
+  const g = ctx.createLinearGradient(0,0,0,canvas.height);
+  g.addColorStop(0,'#0d3b2d'); g.addColorStop(1,'#073026'); ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // draw goal
+  const goalX = canvas.width/2 - 150; const goalW = 300; const goalY = 120; const goalH=20;
+  ctx.fillStyle='#ffffff20'; ctx.fillRect(goalX,goalY,goalW,goalH);
+  // posts
+  ctx.fillStyle='#ffffff'; ctx.fillRect(goalX-6,goalY,6,140); ctx.fillRect(goalX+goalW,goalY,6,140);
+  // penalty spot and arc
+  ctx.fillStyle='#ffffff55'; ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height - 120 + 6, 4,0,Math.PI*2); ctx.fill();
+
+  // draw keeper
+  ctx.fillStyle='#2b5bff'; ctx.fillRect(keeper.x, keeper.y, keeper.w, keeper.h);
+  // face
+  ctx.fillStyle='#ffe0b3'; ctx.fillRect(keeper.x + keeper.w/2 - 12, keeper.y + 8, 24,24);
+
+  // draw ball
+  if (ball){ ctx.beginPath(); ctx.fillStyle='#ffffff'; ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2); ctx.fill(); ctx.closePath(); }
+
+  // display angle indicator
+  drawAim();
+}
+
+function drawAim(){ // show aim guide from penalty spot
+  const px = canvas.width/2; const py = canvas.height - 120; ctx.save();
+  ctx.translate(px,py);
+  ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=2; ctx.beginPath();
+  const rad = angle * Math.PI/180; const len = power/1.4;
+  ctx.moveTo(0,0); ctx.lineTo(Math.sin(rad)*len, -Math.cos(rad)*len); ctx.stroke();
+  ctx.restore();
+  // numeric
+  ctx.fillStyle='#eaf6ff'; ctx.font='14px Tahoma'; ctx.fillText('زاوية: '+angle+'°', 12, 22); ctx.fillText('قوة: '+power+'%', 12, 42);
+}
+
+// simple sounds using WebAudio
+let audioCtx=null;
+function ensureAudio(){ if (!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
+function playKick(){ ensureAudio(); const o = audioCtx.createOscillator(); const g=audioCtx.createGain(); o.frequency.value=220; g.gain.value=0.02; o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.12); }
+function playGoal(){ ensureAudio(); const o = audioCtx.createOscillator(); const g=audioCtx.createGain(); o.frequency.value=660; g.gain.value=0.03; o.connect(g); g.connect(audioCtx.destination); o.start(); o.frequency.setValueAtTime(880,audioCtx.currentTime+0.06); o.stop(audioCtx.currentTime+0.18); }
+function playSave(){ ensureAudio(); const o = audioCtx.createOscillator(); const g=audioCtx.createGain(); o.frequency.value=120; g.gain.value=0.02; o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.18); }
+function playMiss(){ ensureAudio(); const o = audioCtx.createOscillator(); const g=audioCtx.createGain(); o.frequency.value=140; g.gain.value=0.01; o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.08); }
+
+// UI events
+angleInput.addEventListener('input',(e)=>{ angle = parseInt(e.target.value,10); angleVal.textContent = angle + '°'; draw(); });
+powerInput.addEventListener('input',(e)=>{ power = parseInt(e.target.value,10); powerVal.textContent = power; draw(); });
+keeperSelect.addEventListener('change',()=>{ keeperLevel = keeperSelect.value; });
+shootBtn.addEventListener('click', ()=>{ startShot(); });
+resetBtn.addEventListener('click', ()=>{ resetGame(); });
+
+// keyboard control
+window.addEventListener('keydown',(e)=>{
+  if (e.key === 'ArrowLeft'){ angle = Math.max(-40, angle-2); angleInput.value = angle; angleVal.textContent = angle+'°'; draw(); }
+  if (e.key === 'ArrowRight'){ angle = Math.min(40, angle+2); angleInput.value = angle; angleVal.textContent = angle+'°'; draw(); }
+  if (e.key === 'ArrowUp'){ power = Math.min(100,power+2); powerInput.value = power; powerVal.textContent = power; draw(); }
+  if (e.key === 'ArrowDown'){ power = Math.max(20,power-2); powerInput.value = power; powerVal.textContent = power; draw(); }
+  if (e.key === ' ') { e.preventDefault(); startShot(); }
+});
+
+// auto aim: choose a spot away from keeper center
+autoAimBtn.addEventListener('click', ()=>{
+  // aim to corner opposite to keeper position
+  const targetX = (keeper.x + keeper.w/2) < canvas.width/2 ? canvas.width/2 + 90 : canvas.width/2 - 90;
+  // compute angle roughly
+  const px = canvas.width/2; const py = canvas.height - 120;
+  const dx = targetX - px; const dy = - (py - 80);
+  const ang = Math.atan2(dx, dy) * 180/Math.PI;
+  angle = Math.max(-40, Math.min(40, Math.round(ang)));
+  power = 70;
+  angleInput.value = angle; powerInput.value = power; angleVal.textContent = angle+'°'; powerVal.textContent = power; draw();
+});
+
+// download self-contained file
+downloadBtn.addEventListener('click', ()=>{
+  const blob = new Blob([document.documentElement.outerHTML], {type:'text/html'});
+  const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='soccer_penalty.html'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+});
+
+// initial setup
+resetGame(); draw();
+
+</script></body>
+</html>
